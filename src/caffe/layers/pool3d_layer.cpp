@@ -45,6 +45,7 @@ void Pooling3DLayer<Dtype>::SetUp(const vector<Blob<Dtype>*>& bottom,
              PoolingParameter_PoolMethod_AVE)
         << "Padding implemented only for average pooling.";
   }
+  //Reshape
   channels_ = bottom[0]->channels();
   length_ = bottom[0]->length();
   height_ = bottom[0]->height();
@@ -58,6 +59,15 @@ void Pooling3DLayer<Dtype>::SetUp(const vector<Blob<Dtype>*>& bottom,
   (*top)[0]->Reshape(bottom[0]->num(), channels_, pooled_length_, pooled_height_,
       pooled_width_);
 
+  /******add******/
+  //if max pooling, initialize the vector index part
+  if(this->layer_param_.pooling_param().pool()==
+  	PoolingParameter_PoolMethod_MAX){
+  	max_idx.Reshape(bottom[0]->num(), channels_, pooled_length_,pooled_height_,
+  	pooled_width_);
+  }
+  /******add******/
+  
   // If stochastic pooling, we will initialize the random index part.
   if (this->layer_param_.pooling_param().pool() ==
       PoolingParameter_PoolMethod_STOCHASTIC) {
@@ -74,13 +84,29 @@ Dtype Pooling3DLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
 	  // Different pooling methods. We explicitly do the switch outside the for
 	  // loop to save time, although this results in more codes.
 	  int top_count = (*top)[0]->count();
+	  
+  	  /******add******/
+  	  //output the mask to top[1] if size >1
+	  const bool use_top_mask = top.size() >1;
+	  int* mask = NULL;
+	  Dtype* top_mask = NULL;
+  	  /******add******/
 	  switch (this->layer_param_.pooling_param().pool()) {
 	  case PoolingParameter_PoolMethod_MAX:
 	    // Initialize
+	  	/****Modified*****/
+	  	if(use_top_mask){
+	  		top_mask = top[1]->mutable_cpu_data();
+	  		caffe_set(top_count,Dtype(-1),top_mask);	
+	  	} else{
+	  		mask = max_idx.mutable_cpu_data();
+	  		caffe_set(top_count, -1, mask);
+	  	}
 	    for (int i = 0; i < top_count; ++i) {
 	      top_data[i] = -FLT_MAX;
 	    }
 	    // The main loop
+	    /*
 	    for (int n = 0; n < bottom[0]->num(); ++n) {
 	      for (int c = 0; c < channels_; ++c) {
 	    	for (int pl = 0; pl < pooled_length_; ++pl) {
@@ -95,20 +121,74 @@ Dtype Pooling3DLayer<Dtype>::Forward_cpu(const vector<Blob<Dtype>*>& bottom,
 	              for (int l = lstart; l < lend; ++l) {
 	                for (int h = hstart; h < hend; ++h) {
 	                  for (int w = wstart; w < wend; ++w) {
-	                    top_data[(pl * pooled_height_ + ph) * pooled_width_ + pw] =
-	                      max(top_data[(pl * pooled_height_ + ph) * pooled_width_ + pw],
-	                          bottom_data[(l * height_ + h) * width_ + w]);
+	                    if(bottom_data[(l * height_ + h) * width_ + w] > top_data[(pl * pooled_height_ + ph) * pooled_width_ + pw]){
+	                    	top_data[(pl * pooled_height_ + ph) * pooled_width_ + pw] = bottom_data[(l * height_ + h) * width_ + w];
+	                      if (use_top_mask){
+	                      	top_mask[(pl * pooled_height_ + ph) * pooled_width_ + pw]=static_cast<Dtype>((l * height_ + h) * width_ + w);
+	                      } else{
+	                      	mask[(pl * pooled_height_ + ph) * pooled_width_ + pw]=(l * height_ + h) * width_ + w;
+	                      }
+	                  	}
 	                  }
-	                }
+	              	}
 	              }
-	            }
-	          }
-	    	}
+	          	}
+	    	  }
 	        // compute offset
 	        bottom_data += bottom[0]->offset(0, 1);
 	        top_data += (*top)[0]->offset(0, 1);
+	        if(use_top_mask){
+	        	top_mask += top[0]->offset(0, 1);
+	        } else {
+	        	mask += top[0]->offset(0,1);
+	        }
 	      }
 	    }
+		}
+		*/
+
+		for (int n = 0; n < bottom[0]->num(); ++n) {
+	      	for (int c = 0; c < channels_; ++c) {
+	      		for(int pl=0; pl < pooled_length_;++pl){
+		        	for (int ph = 0; ph < pooled_height_; ++ph) {
+		          		for (int pw = 0; pw < pooled_width_; ++pw) {
+				            int hstart = ph * stride_;
+			              	int wstart = pw * stride_;
+			              	int lstart = pl * temporal_stride_;
+				            int hend = min(hstart + kernel_size_, height_);
+			              	int wend = min(wstart + kernel_size_, width_);
+			              	int lend = min(lstart + kernel_depth_, length_);
+				            hstart = max(hstart, 0);
+				            wstart = max(wstart, 0);
+				            const int pool_index = (pl * pooled_height_ + ph) * pooled_width_ + pw;
+				            for (int l = lstart; l < lend; ++l) {
+				            	for (int h = hstart; h < hend; ++h) {
+				              		for (int w = wstart; w < wend; ++w) {
+				                		const int index = (l * height_ + h) * width_ + w;
+				                		if (bottom_data[index] > top_data[pool_index]) {
+				                  			top_data[pool_index] = bottom_data[index];
+				                  			if (use_top_mask) {
+				                    			top_mask[pool_index] = static_cast<Dtype>(index);
+				                  			} else {
+				                    			mask[pool_index] = index;
+				                  			}
+				                		}
+				              		}
+			            		}
+			            	}
+		          		}
+		        	}
+		    	}
+		        // compute offset
+	        	bottom_data += bottom[0]->offset(0, 1);
+	        	top_data += top[0]->offset(0, 1);
+		        if (use_top_mask) {
+		          top_mask += top[0]->offset(0, 1);
+		        } else {
+		          mask += top[0]->offset(0, 1);
+		        }
+		    }
+		}
 	    break;
 	  case PoolingParameter_PoolMethod_AVE:
 	    for (int i = 0; i < top_count; ++i) {
@@ -174,9 +254,19 @@ void Pooling3DLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 	  // Different pooling methods. We explicitly do the switch outside the for
 	  // loop to save time, although this results in more codes.
 	  memset(bottom_diff, 0, (*bottom)[0]->count() * sizeof(Dtype));
+	  /***add****/
+	  const bool use_top_mask =top.size() >1;
+	  const int* mask = NULL;
+	  const Dtype* top_mask = NULL;
 	  switch (this->layer_param_.pooling_param().pool()) {
 	  case PoolingParameter_PoolMethod_MAX:
 	    // The main loop
+	  	if(use_top_mask){
+	  		top_mask = top[1]->cpu_data();
+	  	} else {
+	  		mask = max_idx.cpu_data();
+	  	}
+	  	/*
 	    for (int n = 0; n < top[0]->num(); ++n) {
 	      for (int c = 0; c < channels_; ++c) {
 	    	for (int pl = 0; pl < pooled_length_; ++pl) {
@@ -208,6 +298,33 @@ void Pooling3DLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
 	        top_diff += top[0]->offset(0, 1);
 	      }
 	    }
+		*/
+		/******Modified*******/
+		for (int n = 0; n < top[0]->num(); ++n) {
+      		for (int c = 0; c < channels_; ++c) {
+      			for (int pl = 0; pl < pooled_length_; ++pl) {
+	        		for (int ph = 0; ph < pooled_height_; ++ph) {
+	          			for (int pw = 0; pw < pooled_width_; ++pw) {
+	            			const int index = (pl * pooled_height_ + ph) * pooled_width_ + pw;
+	            			if(use_top_mask){
+	            				const int bottom_index = top_mask[index]; 
+	            			} else {
+	            				const int bottom_index = mask[index];
+	            			}
+	            			bottom_diff[bottom_index] += top_diff[index];
+	          			}
+	        		}
+	        		bottom_diff += bottom[0]->offset(0, 1);
+	        		top_diff += top[0]->offset(0, 1);
+	        		if (use_top_mask) {
+	          			top_mask += top[0]->offset(0, 1);
+	        		} else {
+	          			mask += top[0]->offset(0, 1);
+	        		}
+        		}
+      		}
+    	}
+    	/******Modified*******/
 	    break;
 	  case PoolingParameter_PoolMethod_AVE:
 	    // The main loop
